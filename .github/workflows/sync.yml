@@ -174,7 +174,9 @@ jobs:
           This branch contains merge conflicts from upstream that need
           manual resolution. Please resolve the conflicts and merge this PR." || true
 
-          git push https://x-access-token:${{ secrets.SYNC_PAT }}@github.com/${{ github.repository }}.git "$BRANCH_NAME"
+          # Remote URL'i PAT ile güncelle (workflow dosyaları push edebilmek için)
+          git remote set-url origin "https://x-access-token:${{ secrets.SYNC_PAT }}@github.com/${{ github.repository }}.git"
+          git push origin "$BRANCH_NAME"
           echo "✅ Conflict branch pushed."
 
       # ──────────────────────────────────────
