@@ -94,7 +94,7 @@ jobs:
         if: steps.check.outputs.has_changes == 'true' && github.event.inputs.dry_run == 'true'
         run: |
           echo "🧪 DRY RUN — Merge simülasyonu:"
-          if git merge --no-commit --no-ff upstream/${{ env.UPSTREAM_BRANCH }} 2>/dev/null; then
+          if git merge --no-commit --no-ff --allow-unrelated-histories upstream/${{ env.UPSTREAM_BRANCH }} 2>/dev/null; then
             echo "  ✅ Clean merge mümkün"
             git merge --abort 2>/dev/null || true
           else
@@ -118,6 +118,7 @@ jobs:
 
           if git merge upstream/${{ env.UPSTREAM_BRANCH }} \
               --no-edit \
+              --allow-unrelated-histories \
               -m "chore: sync with upstream ($(date -u +%Y-%m-%dT%H:%M:%SZ))"; then
             echo ""
             echo "✅ Merge successful — no conflicts."
@@ -134,7 +135,7 @@ jobs:
             echo "Conflicted files: $CONFLICTED_FILES"
 
             # Merge'i geri al
-            git merge --abort
+            git merge --abort 2>/dev/null || true
           fi
 
       # ──────────────────────────────────────
@@ -162,7 +163,7 @@ jobs:
           git checkout -b "$BRANCH_NAME"
 
           # Merge'i conflict'li haliyle uygula (resolve etmeden)
-          git merge upstream/${{ env.UPSTREAM_BRANCH }} --no-edit || true
+          git merge upstream/${{ env.UPSTREAM_BRANCH }} --no-edit --allow-unrelated-histories || true
 
           # Conflict marker'lı dosyaları commit et
           git add -A
