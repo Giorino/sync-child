@@ -178,7 +178,24 @@ jobs:
           echo "✅ Conflict branch pushed."
 
       # ──────────────────────────────────────
-      # 9. Conflict → PR oluştur
+      # 9. Label'ları oluştur (yoksa)
+      # ──────────────────────────────────────
+      - name: Ensure labels exist
+        if: steps.merge.outputs.merge_status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Label yoksa oluştur, varsa atla
+          gh label create "auto-sync" \
+            --description "Automatically created by upstream sync" \
+            --color "0E8A16" 2>/dev/null || true
+
+          gh label create "conflict" \
+            --description "Merge conflict needs manual resolution" \
+            --color "D93F0B" 2>/dev/null || true
+
+      # ──────────────────────────────────────
+      # 10. Conflict → PR oluştur
       # ──────────────────────────────────────
       - name: Create Pull Request
         if: steps.merge.outputs.merge_status == 'conflict'
@@ -238,23 +255,6 @@ jobs:
             --label "auto-sync,conflict"
 
           echo "✅ Pull Request created."
-
-      # ──────────────────────────────────────
-      # 10. Label'ları oluştur (yoksa)
-      # ──────────────────────────────────────
-      - name: Ensure labels exist
-        if: steps.merge.outputs.merge_status == 'conflict'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Label yoksa oluştur, varsa atla
-          gh label create "auto-sync" \
-            --description "Automatically created by upstream sync" \
-            --color "0E8A16" 2>/dev/null || true
-
-          gh label create "conflict" \
-            --description "Merge conflict needs manual resolution" \
-            --color "D93F0B" 2>/dev/null || true
 
       # ──────────────────────────────────────
       # 11. Slack bildirim (opsiyonel)
