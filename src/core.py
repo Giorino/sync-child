@@ -14,3 +14,7 @@ def get_version():
 def core_function():
     """Example core functionality shared across all child repos."""
     return "Hello from parent core!"
+
+def new_feature():
+    """A brand new feature from parent."""
+    return "new feature v2"
