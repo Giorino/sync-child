@@ -1,0 +1,332 @@
+name: Sync with Parent
+
+# ─────────────────────────────────────────────────────────
+# Triggers:
+#   1. Cron: Saatte bir upstream kontrolü
+#   2. repository_dispatch: Parent push yaptığında
+#   3. workflow_dispatch: Manuel tetikleme
+# ─────────────────────────────────────────────────────────
+on:
+  schedule:
+    - cron: "0 * * * *"  # Her saat başı
+
+  repository_dispatch:
+    types: [upstream-sync]
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — merge etme, sadece kontrol et"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+env:
+  UPSTREAM_REPO: "https://github.com/Giorino/sync-parent.git"
+  UPSTREAM_BRANCH: "main"
+  TARGET_BRANCH: "main"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: Sync upstream changes
+    runs-on: ubuntu-latest
+
+    steps:
+      # ──────────────────────────────────────
+      # 1. Checkout — full history gerekli
+      # ──────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ──────────────────────────────────────
+      # 2. Git identity ayarla
+      # ──────────────────────────────────────
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # ──────────────────────────────────────
+      # 3. Upstream remote ekle ve fetch et
+      # ──────────────────────────────────────
+      - name: Add upstream remote
+        run: |
+          git remote add upstream "${{ env.UPSTREAM_REPO }}" 2>/dev/null || true
+          git fetch upstream
+          echo ""
+          echo "📊 Upstream status:"
+          echo "  Local HEAD:    $(git rev-parse HEAD)"
+          echo "  Upstream HEAD: $(git rev-parse upstream/${{ env.UPSTREAM_BRANCH }})"
+
+      # ──────────────────────────────────────
+      # 4. Değişiklik var mı kontrol et
+      # ──────────────────────────────────────
+      - name: Check for changes
+        id: check
+        run: |
+          LOCAL_SHA=$(git rev-parse HEAD)
+          UPSTREAM_SHA=$(git rev-parse upstream/${{ env.UPSTREAM_BRANCH }})
+
+          if [ "$LOCAL_SHA" = "$UPSTREAM_SHA" ]; then
+            echo "✅ Already up to date — nothing to sync."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            BEHIND=$(git rev-list --count HEAD..upstream/${{ env.UPSTREAM_BRANCH }})
+            echo "🔄 $BEHIND commit(s) behind upstream."
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "behind_count=$BEHIND" >> $GITHUB_OUTPUT
+          fi
+
+      # ──────────────────────────────────────
+      # 5. Dry run modu (sadece kontrol)
+      # ──────────────────────────────────────
+      - name: Dry run check
+        if: steps.check.outputs.has_changes == 'true' && github.event.inputs.dry_run == 'true'
+        run: |
+          echo "🧪 DRY RUN — Merge simülasyonu:"
+          if git merge --no-commit --no-ff upstream/${{ env.UPSTREAM_BRANCH }} 2>/dev/null; then
+            echo "  ✅ Clean merge mümkün"
+            git merge --abort 2>/dev/null || true
+          else
+            echo "  ⚠️  Conflict tespit edildi!"
+            git merge --abort 2>/dev/null || true
+            echo ""
+            echo "Conflict'li dosyalar:"
+            git diff --name-only --diff-filter=U 2>/dev/null || true
+          fi
+          echo ""
+          echo "ℹ️  Dry run tamamlandı — değişiklik uygulanmadı."
+
+      # ──────────────────────────────────────
+      # 6. Merge dene
+      # ──────────────────────────────────────
+      - name: Attempt merge
+        id: merge
+        if: steps.check.outputs.has_changes == 'true' && github.event.inputs.dry_run != 'true'
+        run: |
+          echo "🔀 Merging upstream/${{ env.UPSTREAM_BRANCH }} into ${{ env.TARGET_BRANCH }}..."
+
+          if git merge upstream/${{ env.UPSTREAM_BRANCH }} \
+              --no-edit \
+              -m "chore: sync with upstream ($(date -u +%Y-%m-%dT%H:%M:%SZ))"; then
+            echo ""
+            echo "✅ Merge successful — no conflicts."
+            echo "merge_status=success" >> $GITHUB_OUTPUT
+          else
+            echo ""
+            echo "❌ Merge failed — conflicts detected!"
+            echo "merge_status=conflict" >> $GITHUB_OUTPUT
+
+            # Conflict'li dosyaları kaydet
+            CONFLICTED_FILES=$(git diff --name-only --diff-filter=U | tr '\n' ',' | sed 's/,$//')
+            echo "conflicted_files=$CONFLICTED_FILES" >> $GITHUB_OUTPUT
+            echo ""
+            echo "Conflicted files: $CONFLICTED_FILES"
+
+            # Merge'i geri al
+            git merge --abort
+          fi
+
+      # ──────────────────────────────────────
+      # 7. Başarılı merge → Push
+      # ──────────────────────────────────────
+      - name: Push changes
+        if: steps.merge.outputs.merge_status == 'success'
+        run: |
+          echo "🚀 Pushing merged changes to origin/${{ env.TARGET_BRANCH }}..."
+          git push origin ${{ env.TARGET_BRANCH }}
+          echo "✅ Push complete."
+
+      # ──────────────────────────────────────
+      # 8. Conflict → PR branch oluştur
+      # ──────────────────────────────────────
+      - name: Create conflict branch
+        id: conflict_branch
+        if: steps.merge.outputs.merge_status == 'conflict'
+        run: |
+          TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+          BRANCH_NAME="upstream-sync/conflict-${TIMESTAMP}"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+          echo "🌿 Creating conflict branch: $BRANCH_NAME"
+          git checkout -b "$BRANCH_NAME"
+
+          # Merge'i conflict'li haliyle uygula (resolve etmeden)
+          git merge upstream/${{ env.UPSTREAM_BRANCH }} --no-edit || true
+
+          # Conflict marker'lı dosyaları commit et
+          git add -A
+          git commit -m "chore: upstream sync conflict (needs manual resolution)
+
+          Conflicted files: ${{ steps.merge.outputs.conflicted_files }}
+
+          This branch contains merge conflicts from upstream that need
+          manual resolution. Please resolve the conflicts and merge this PR." || true
+
+          git push origin "$BRANCH_NAME"
+          echo "✅ Conflict branch pushed."
+
+      # ──────────────────────────────────────
+      # 9. Conflict → PR oluştur
+      # ──────────────────────────────────────
+      - name: Create Pull Request
+        if: steps.merge.outputs.merge_status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CONFLICTED_FILES="${{ steps.merge.outputs.conflicted_files }}"
+          BRANCH_NAME="${{ steps.conflict_branch.outputs.branch_name }}"
+          BEHIND_COUNT="${{ steps.check.outputs.behind_count }}"
+
+          # Dosya listesini markdown formatına çevir
+          FILE_LIST=$(echo "$CONFLICTED_FILES" | tr ',' '\n' | sed 's/^/- `/' | sed 's/$/`/')
+
+          PR_BODY="## ⚠️ Upstream Sync Conflict
+
+          Upstream repository'den gelen değişiklikler ile bu repository arasında conflict tespit edildi.
+
+          ### 📊 Detaylar
+
+          | | |
+          |---|---|
+          | **Upstream** | \`${{ env.UPSTREAM_REPO }}\` |
+          | **Behind** | ${BEHIND_COUNT} commit |
+          | **Tarih** | $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC) |
+          | **Tetikleyen** | \`${{ github.event_name }}\` |
+
+          ### 📝 Conflict'li Dosyalar
+
+          ${FILE_LIST}
+
+          ### 🔧 Çözüm Adımları
+
+          1. Bu branch'i local'e çekin:
+             \`\`\`bash
+             git fetch origin
+             git checkout ${BRANCH_NAME}
+             \`\`\`
+
+          2. Conflict'leri çözün:
+             \`\`\`bash
+             # Her conflict'li dosyayı düzenleyin
+             # <<<<<<< HEAD ve >>>>>>> upstream/main marker'larını kaldırın
+             git add <resolved-files>
+             git commit -m \"fix: resolve upstream sync conflicts\"
+             \`\`\`
+
+          3. PR'ı merge edin.
+
+          ---
+          _Bu PR otomatik olarak GitHub Actions tarafından oluşturulmuştur._"
+
+          gh pr create \
+            --base "${{ env.TARGET_BRANCH }}" \
+            --head "$BRANCH_NAME" \
+            --title "⚠️ Upstream Sync Conflict — Manuel Çözüm Gerekli" \
+            --body "$PR_BODY" \
+            --label "auto-sync,conflict"
+
+          echo "✅ Pull Request created."
+
+      # ──────────────────────────────────────
+      # 10. Label'ları oluştur (yoksa)
+      # ──────────────────────────────────────
+      - name: Ensure labels exist
+        if: steps.merge.outputs.merge_status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Label yoksa oluştur, varsa atla
+          gh label create "auto-sync" \
+            --description "Automatically created by upstream sync" \
+            --color "0E8A16" 2>/dev/null || true
+
+          gh label create "conflict" \
+            --description "Merge conflict needs manual resolution" \
+            --color "D93F0B" 2>/dev/null || true
+
+      # ──────────────────────────────────────
+      # 11. Slack bildirim (opsiyonel)
+      # ──────────────────────────────────────
+      - name: Notify Slack (optional)
+        if: steps.merge.outputs.merge_status == 'conflict' && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"text\": \"⚠️ *Upstream Sync Conflict*\",
+              \"blocks\": [
+                {
+                  \"type\": \"header\",
+                  \"text\": {
+                    \"type\": \"plain_text\",
+                    \"text\": \"⚠️ Upstream Sync Conflict\"
+                  }
+                },
+                {
+                  \"type\": \"section\",
+                  \"fields\": [
+                    {\"type\": \"mrkdwn\", \"text\": \"*Repo:*\n${{ github.repository }}\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Files:*\n${{ steps.merge.outputs.conflicted_files }}\"}
+                  ]
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"<${{ github.server_url }}/${{ github.repository }}/pulls|View Pull Requests>\"
+                  }
+                }
+              ]
+            }"
+          echo "✅ Slack notification sent."
+
+      # ──────────────────────────────────────
+      # 12. Conflict varsa action'ı fail et
+      # ──────────────────────────────────────
+      - name: Fail on conflict
+        if: steps.merge.outputs.merge_status == 'conflict'
+        run: |
+          echo "❌ Action failed due to merge conflicts."
+          echo "   A Pull Request has been created for manual resolution."
+          exit 1
+
+      # ──────────────────────────────────────
+      # 13. Özet
+      # ──────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════"
+          echo "  Upstream Sync Summary"
+          echo "═══════════════════════════════════════"
+          echo ""
+
+          if [ "${{ steps.check.outputs.has_changes }}" = "false" ]; then
+            echo "  Status: ✅ Already up to date"
+          elif [ "${{ steps.merge.outputs.merge_status }}" = "success" ]; then
+            echo "  Status: ✅ Synced successfully"
+            echo "  Commits: ${{ steps.check.outputs.behind_count }} merged"
+          elif [ "${{ steps.merge.outputs.merge_status }}" = "conflict" ]; then
+            echo "  Status: ❌ Conflict detected"
+            echo "  Files:  ${{ steps.merge.outputs.conflicted_files }}"
+            echo "  PR:     Created for manual resolution"
+          else
+            echo "  Status: ⏭️  Skipped (dry run or no changes)"
+          fi
+
+          echo ""
+          echo "═══════════════════════════════════════"

@@ -1,0 +1,9 @@
+{
+    "app_name": "Child Application",
+    "version": "1.0.0",
+    "environment": "production",
+    "features": {
+        "custom_branding": true,
+        "analytics": false
+    }
+}
