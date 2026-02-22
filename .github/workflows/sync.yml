@@ -55,6 +55,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Remote URL'i PAT ile güncelle (workflow dosyalarını push edebilmek için)
+          git remote set-url origin "https://x-access-token:${{ secrets.SYNC_PAT }}@github.com/${{ github.repository }}.git"
 
       # ──────────────────────────────────────
       # 3. Upstream remote ekle ve fetch et
@@ -82,9 +84,14 @@ jobs:
             echo "has_changes=false" >> $GITHUB_OUTPUT
           else
             BEHIND=$(git rev-list --count HEAD..upstream/${{ env.UPSTREAM_BRANCH }})
-            echo "🔄 $BEHIND commit(s) behind upstream."
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "behind_count=$BEHIND" >> $GITHUB_OUTPUT
+            if [ "$BEHIND" -eq 0 ]; then
+              echo "✅ Upstream has no new commits — nothing to sync."
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+            else
+              echo "🔄 $BEHIND commit(s) behind upstream."
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+              echo "behind_count=$BEHIND" >> $GITHUB_OUTPUT
+            fi
           fi
 
       # ──────────────────────────────────────
@@ -108,13 +115,20 @@ jobs:
           echo "ℹ️  Dry run tamamlandı — değişiklik uygulanmadı."
 
       # ──────────────────────────────────────
-      # 6. Merge dene
+      # 6. Sync branch oluştur ve merge dene
       # ──────────────────────────────────────
-      - name: Attempt merge
+      - name: Create sync branch and attempt merge
         id: merge
         if: steps.check.outputs.has_changes == 'true' && github.event.inputs.dry_run != 'true'
         run: |
-          echo "🔀 Merging upstream/${{ env.UPSTREAM_BRANCH }} into ${{ env.TARGET_BRANCH }}..."
+          TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+          BRANCH_NAME="upstream-sync/${TIMESTAMP}"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+          echo "🌿 Creating sync branch: $BRANCH_NAME"
+          git checkout -b "$BRANCH_NAME"
+
+          echo "🔀 Merging upstream/${{ env.UPSTREAM_BRANCH }}..."
 
           if git merge upstream/${{ env.UPSTREAM_BRANCH }} \
               --no-edit \
@@ -122,72 +136,41 @@ jobs:
               -m "chore: sync with upstream ($(date -u +%Y-%m-%dT%H:%M:%SZ))"; then
             echo ""
             echo "✅ Merge successful — no conflicts."
-            echo "merge_status=success" >> $GITHUB_OUTPUT
+            echo "merge_status=clean" >> $GITHUB_OUTPUT
           else
             echo ""
-            echo "❌ Merge failed — conflicts detected!"
+            echo "⚠️ Merge has conflicts — committing conflict markers."
             echo "merge_status=conflict" >> $GITHUB_OUTPUT
 
             # Conflict'li dosyaları kaydet
             CONFLICTED_FILES=$(git diff --name-only --diff-filter=U | tr '\n' ',' | sed 's/,$//')
             echo "conflicted_files=$CONFLICTED_FILES" >> $GITHUB_OUTPUT
-            echo ""
             echo "Conflicted files: $CONFLICTED_FILES"
 
-            # Merge'i geri al
-            git merge --abort 2>/dev/null || true
-          fi
+            # Conflict marker'lı dosyaları commit et
+            git add -A
+            git commit -m "chore: upstream sync conflict (needs manual resolution)
 
-      # ──────────────────────────────────────
-      # 7. Başarılı merge → Push
-      # ──────────────────────────────────────
-      - name: Push changes
-        if: steps.merge.outputs.merge_status == 'success'
-        run: |
-          echo "🚀 Pushing merged changes to origin/${{ env.TARGET_BRANCH }}..."
-          git push origin ${{ env.TARGET_BRANCH }}
-          echo "✅ Push complete."
-
-      # ──────────────────────────────────────
-      # 8. Conflict → PR branch oluştur
-      # ──────────────────────────────────────
-      - name: Create conflict branch
-        id: conflict_branch
-        if: steps.merge.outputs.merge_status == 'conflict'
-        run: |
-          TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
-          BRANCH_NAME="upstream-sync/conflict-${TIMESTAMP}"
-          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
-
-          echo "🌿 Creating conflict branch: $BRANCH_NAME"
-          git checkout -b "$BRANCH_NAME"
-
-          # Merge'i conflict'li haliyle uygula (resolve etmeden)
-          git merge upstream/${{ env.UPSTREAM_BRANCH }} --no-edit --allow-unrelated-histories || true
-
-          # Conflict marker'lı dosyaları commit et
-          git add -A
-          git commit -m "chore: upstream sync conflict (needs manual resolution)
-
-          Conflicted files: ${{ steps.merge.outputs.conflicted_files }}
+          Conflicted files: ${CONFLICTED_FILES}
 
           This branch contains merge conflicts from upstream that need
-          manual resolution. Please resolve the conflicts and merge this PR." || true
+          manual resolution. Please resolve the conflicts and merge this PR."
+          fi
 
-          # Remote URL'i PAT ile güncelle (workflow dosyaları push edebilmek için)
-          git remote set-url origin "https://x-access-token:${{ secrets.SYNC_PAT }}@github.com/${{ github.repository }}.git"
+          # Branch'i push et
+          echo ""
+          echo "🚀 Pushing branch..."
           git push origin "$BRANCH_NAME"
-          echo "✅ Conflict branch pushed."
+          echo "✅ Branch pushed."
 
       # ──────────────────────────────────────
-      # 9. Label'ları oluştur (yoksa)
+      # 7. Label'ları oluştur (yoksa)
       # ──────────────────────────────────────
       - name: Ensure labels exist
-        if: steps.merge.outputs.merge_status == 'conflict'
+        if: steps.merge.outputs.merge_status == 'clean' || steps.merge.outputs.merge_status == 'conflict'
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
-          # Label yoksa oluştur, varsa atla
           gh label create "auto-sync" \
             --description "Automatically created by upstream sync" \
             --color "0E8A16" 2>/dev/null || true
@@ -196,16 +179,65 @@ jobs:
             --description "Merge conflict needs manual resolution" \
             --color "D93F0B" 2>/dev/null || true
 
+          gh label create "ready-to-merge" \
+            --description "Clean sync — ready to merge" \
+            --color "0075CA" 2>/dev/null || true
+
       # ──────────────────────────────────────
-      # 10. Conflict → PR oluştur
+      # 8. Clean merge → PR oluştur (review için)
       # ──────────────────────────────────────
-      - name: Create Pull Request
+      - name: Create clean sync PR
+        if: steps.merge.outputs.merge_status == 'clean'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          BRANCH_NAME="${{ steps.merge.outputs.branch_name }}"
+          BEHIND_COUNT="${{ steps.check.outputs.behind_count }}"
+
+          PR_BODY="## ✅ Upstream Sync — Clean Merge
+
+          Upstream repository'den gelen değişiklikler başarıyla merge edildi. Conflict yok.
+
+          ### 📊 Detaylar
+
+          | | |
+          |---|---|
+          | **Upstream** | \`${{ env.UPSTREAM_REPO }}\` |
+          | **Commits** | ${BEHIND_COUNT} yeni commit |
+          | **Tarih** | $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC) |
+          | **Tetikleyen** | \`${{ github.event_name }}\` |
+          | **Durum** | ✅ Clean merge — conflict yok |
+
+          ### 🔍 Review
+
+          Değişiklikleri inceleyip uygunsa merge edebilirsiniz.
+
+          ---
+          _Bu PR otomatik olarak GitHub Actions tarafından oluşturulmuştur._"
+
+          PR_URL=$(gh pr create \
+            --base "${{ env.TARGET_BRANCH }}" \
+            --head "$BRANCH_NAME" \
+            --title "✅ Upstream Sync — ${BEHIND_COUNT} commit" \
+            --body "$PR_BODY")
+
+          echo "PR created: $PR_URL"
+
+          # Label'ları ekle
+          gh pr edit "$BRANCH_NAME" --add-label "auto-sync" --add-label "ready-to-merge" || true
+
+          echo "✅ Clean sync PR created — ready for review."
+
+      # ──────────────────────────────────────
+      # 9. Conflict → PR oluştur (çözüm için)
+      # ──────────────────────────────────────
+      - name: Create conflict PR
         if: steps.merge.outputs.merge_status == 'conflict'
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
           CONFLICTED_FILES="${{ steps.merge.outputs.conflicted_files }}"
-          BRANCH_NAME="${{ steps.conflict_branch.outputs.branch_name }}"
+          BRANCH_NAME="${{ steps.merge.outputs.branch_name }}"
           BEHIND_COUNT="${{ steps.check.outputs.behind_count }}"
 
           # Dosya listesini markdown formatına çevir
@@ -249,7 +281,6 @@ jobs:
           ---
           _Bu PR otomatik olarak GitHub Actions tarafından oluşturulmuştur._"
 
-          # PR oluştur (label olmadan)
           PR_URL=$(gh pr create \
             --base "${{ env.TARGET_BRANCH }}" \
             --head "$BRANCH_NAME" \
@@ -258,13 +289,13 @@ jobs:
 
           echo "PR created: $PR_URL"
 
-          # Label'ları ayrı ekle
+          # Label'ları ekle
           gh pr edit "$BRANCH_NAME" --add-label "auto-sync" --add-label "conflict" || true
 
-          echo "✅ Pull Request created with labels."
+          echo "✅ Conflict PR created — manual resolution needed."
 
       # ──────────────────────────────────────
-      # 11. Slack bildirim (opsiyonel)
+      # 10. Slack bildirim (opsiyonel)
       # ──────────────────────────────────────
       - name: Notify Slack (optional)
         if: steps.merge.outputs.merge_status == 'conflict' && env.SLACK_WEBHOOK_URL != ''
@@ -302,17 +333,7 @@ jobs:
           echo "✅ Slack notification sent."
 
       # ──────────────────────────────────────
-      # 12. Conflict varsa action'ı fail et
-      # ──────────────────────────────────────
-      - name: Fail on conflict
-        if: steps.merge.outputs.merge_status == 'conflict'
-        run: |
-          echo "❌ Action failed due to merge conflicts."
-          echo "   A Pull Request has been created for manual resolution."
-          exit 1
-
-      # ──────────────────────────────────────
-      # 13. Özet
+      # 11. Özet
       # ──────────────────────────────────────
       - name: Summary
         if: always()
@@ -325,15 +346,20 @@ jobs:
 
           if [ "${{ steps.check.outputs.has_changes }}" = "false" ]; then
             echo "  Status: ✅ Already up to date"
-          elif [ "${{ steps.merge.outputs.merge_status }}" = "success" ]; then
-            echo "  Status: ✅ Synced successfully"
-            echo "  Commits: ${{ steps.check.outputs.behind_count }} merged"
+          elif [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            echo "  Status: 🧪 Dry run completed"
+          elif [ "${{ steps.merge.outputs.merge_status }}" = "clean" ]; then
+            echo "  Status: ✅ Clean sync PR created"
+            echo "  Branch: ${{ steps.merge.outputs.branch_name }}"
+            echo "  Commits: ${{ steps.check.outputs.behind_count }}"
+            echo "  Action: Review and merge the PR"
           elif [ "${{ steps.merge.outputs.merge_status }}" = "conflict" ]; then
-            echo "  Status: ❌ Conflict detected"
+            echo "  Status: ⚠️ Conflict PR created"
+            echo "  Branch: ${{ steps.merge.outputs.branch_name }}"
             echo "  Files:  ${{ steps.merge.outputs.conflicted_files }}"
-            echo "  PR:     Created for manual resolution"
+            echo "  Action: Resolve conflicts and merge the PR"
           else
-            echo "  Status: ⏭️  Skipped (dry run or no changes)"
+            echo "  Status: ⏭️ Skipped"
           fi
 
           echo ""
