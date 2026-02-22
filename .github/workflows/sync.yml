@@ -122,7 +122,7 @@ jobs:
         if: steps.check.outputs.has_changes == 'true' && github.event.inputs.dry_run != 'true'
         run: |
           TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
-          BRANCH_NAME="upstream-sync/${TIMESTAMP}"
+          BRANCH_NAME="upstream-sync-${TIMESTAMP}"
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
           echo "🌿 Creating sync branch: $BRANCH_NAME"
@@ -186,6 +186,12 @@ jobs:
       # ──────────────────────────────────────
       # 8. Clean merge → PR oluştur (review için)
       # ──────────────────────────────────────
+      - name: Wait for branch propagation
+        if: steps.merge.outputs.merge_status == 'clean' || steps.merge.outputs.merge_status == 'conflict'
+        run: |
+          echo "⏳ Waiting for GitHub to process the pushed branch..."
+          sleep 5
+
       - name: Create clean sync PR
         if: steps.merge.outputs.merge_status == 'clean'
         env:
