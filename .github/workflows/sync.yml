@@ -183,7 +183,7 @@ jobs:
       - name: Ensure labels exist
         if: steps.merge.outputs.merge_status == 'conflict'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
           # Label yoksa oluştur, varsa atla
           gh label create "auto-sync" \
@@ -200,7 +200,7 @@ jobs:
       - name: Create Pull Request
         if: steps.merge.outputs.merge_status == 'conflict'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
           CONFLICTED_FILES="${{ steps.merge.outputs.conflicted_files }}"
           BRANCH_NAME="${{ steps.conflict_branch.outputs.branch_name }}"
@@ -247,14 +247,19 @@ jobs:
           ---
           _Bu PR otomatik olarak GitHub Actions tarafından oluşturulmuştur._"
 
-          gh pr create \
+          # PR oluştur (label olmadan)
+          PR_URL=$(gh pr create \
             --base "${{ env.TARGET_BRANCH }}" \
             --head "$BRANCH_NAME" \
             --title "⚠️ Upstream Sync Conflict — Manuel Çözüm Gerekli" \
-            --body "$PR_BODY" \
-            --label "auto-sync,conflict"
+            --body "$PR_BODY")
 
-          echo "✅ Pull Request created."
+          echo "PR created: $PR_URL"
+
+          # Label'ları ayrı ekle
+          gh pr edit "$BRANCH_NAME" --add-label "auto-sync" --add-label "conflict" || true
+
+          echo "✅ Pull Request created with labels."
 
       # ──────────────────────────────────────
       # 11. Slack bildirim (opsiyonel)
