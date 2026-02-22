@@ -200,37 +200,39 @@ jobs:
           BRANCH_NAME="${{ steps.merge.outputs.branch_name }}"
           BEHIND_COUNT="${{ steps.check.outputs.behind_count }}"
 
-          PR_BODY="## ✅ Upstream Sync — Clean Merge
+          PR_TITLE="✅ Upstream Sync — ${BEHIND_COUNT} commit"
+          PR_BODY="## ✅ Upstream Sync — Clean Merge\n\nUpstream değişiklikler başarıyla merge edildi. Conflict yok.\n\n| | |\n|---|---|\n| **Upstream** | \`${{ env.UPSTREAM_REPO }}\` |\n| **Commits** | ${BEHIND_COUNT} yeni commit |\n| **Tarih** | $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC) |\n| **Tetikleyen** | \`${{ github.event_name }}\` |\n| **Durum** | ✅ Clean merge — conflict yok |\n\nDeğişiklikleri inceleyip uygunsa merge edin.\n\n---\n_Bu PR otomatik olarak GitHub Actions tarafından oluşturulmuştur._"
 
-          Upstream repository'den gelen değişiklikler başarıyla merge edildi. Conflict yok.
+          # REST API ile PR oluştur
+          PR_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls" \
+            -d "$(jq -n \
+              --arg title "$PR_TITLE" \
+              --arg body "$PR_BODY" \
+              --arg head "$BRANCH_NAME" \
+              --arg base "${{ env.TARGET_BRANCH }}" \
+              '{title: $title, body: $body, head: $head, base: $base}')")
 
-          ### 📊 Detaylar
+          PR_NUMBER=$(echo "$PR_RESPONSE" | jq -r '.number')
+          PR_URL=$(echo "$PR_RESPONSE" | jq -r '.html_url')
 
-          | | |
-          |---|---|
-          | **Upstream** | \`${{ env.UPSTREAM_REPO }}\` |
-          | **Commits** | ${BEHIND_COUNT} yeni commit |
-          | **Tarih** | $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC) |
-          | **Tetikleyen** | \`${{ github.event_name }}\` |
-          | **Durum** | ✅ Clean merge — conflict yok |
+          if [ "$PR_NUMBER" = "null" ] || [ -z "$PR_NUMBER" ]; then
+            echo "❌ PR creation failed:"
+            echo "$PR_RESPONSE" | jq '.'
+            exit 1
+          fi
 
-          ### 🔍 Review
-
-          Değişiklikleri inceleyip uygunsa merge edebilirsiniz.
-
-          ---
-          _Bu PR otomatik olarak GitHub Actions tarafından oluşturulmuştur._"
-
-          PR_URL=$(gh pr create \
-            --base "${{ env.TARGET_BRANCH }}" \
-            --head "$BRANCH_NAME" \
-            --title "✅ Upstream Sync — ${BEHIND_COUNT} commit" \
-            --body "$PR_BODY")
-
-          echo "PR created: $PR_URL"
+          echo "PR #${PR_NUMBER} created: $PR_URL"
 
           # Label'ları ekle
-          gh pr edit "$BRANCH_NAME" --add-label "auto-sync" --add-label "ready-to-merge" || true
+          curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" \
+            -d '{"labels":["auto-sync","ready-to-merge"]}' > /dev/null || true
 
           echo "✅ Clean sync PR created — ready for review."
 
@@ -246,57 +248,41 @@ jobs:
           BRANCH_NAME="${{ steps.merge.outputs.branch_name }}"
           BEHIND_COUNT="${{ steps.check.outputs.behind_count }}"
 
-          # Dosya listesini markdown formatına çevir
           FILE_LIST=$(echo "$CONFLICTED_FILES" | tr ',' '\n' | sed 's/^/- `/' | sed 's/$/`/')
 
-          PR_BODY="## ⚠️ Upstream Sync Conflict
+          PR_TITLE="⚠️ Upstream Sync Conflict — Manuel Çözüm Gerekli"
+          PR_BODY="## ⚠️ Upstream Sync Conflict\n\nConflict tespit edildi.\n\n| | |\n|---|---|\n| **Upstream** | \`${{ env.UPSTREAM_REPO }}\` |\n| **Behind** | ${BEHIND_COUNT} commit |\n| **Tarih** | $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC) |\n\n### Conflict Dosyaları\n\n${FILE_LIST}\n\n### Çözüm\n\n\`\`\`bash\ngit fetch origin\ngit checkout ${BRANCH_NAME}\n# Conflict'leri çözün\ngit add <resolved-files>\ngit commit -m \"fix: resolve upstream sync conflicts\"\ngit push\n\`\`\`\n\n---\n_Bu PR otomatik olarak GitHub Actions tarafından oluşturulmuştur._"
 
-          Upstream repository'den gelen değişiklikler ile bu repository arasında conflict tespit edildi.
+          # REST API ile PR oluştur
+          PR_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls" \
+            -d "$(jq -n \
+              --arg title "$PR_TITLE" \
+              --arg body "$PR_BODY" \
+              --arg head "$BRANCH_NAME" \
+              --arg base "${{ env.TARGET_BRANCH }}" \
+              '{title: $title, body: $body, head: $head, base: $base}')")
 
-          ### 📊 Detaylar
+          PR_NUMBER=$(echo "$PR_RESPONSE" | jq -r '.number')
+          PR_URL=$(echo "$PR_RESPONSE" | jq -r '.html_url')
 
-          | | |
-          |---|---|
-          | **Upstream** | \`${{ env.UPSTREAM_REPO }}\` |
-          | **Behind** | ${BEHIND_COUNT} commit |
-          | **Tarih** | $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC) |
-          | **Tetikleyen** | \`${{ github.event_name }}\` |
+          if [ "$PR_NUMBER" = "null" ] || [ -z "$PR_NUMBER" ]; then
+            echo "❌ PR creation failed:"
+            echo "$PR_RESPONSE" | jq '.'
+            exit 1
+          fi
 
-          ### 📝 Conflict'li Dosyalar
-
-          ${FILE_LIST}
-
-          ### 🔧 Çözüm Adımları
-
-          1. Bu branch'i local'e çekin:
-             \`\`\`bash
-             git fetch origin
-             git checkout ${BRANCH_NAME}
-             \`\`\`
-
-          2. Conflict'leri çözün:
-             \`\`\`bash
-             # Her conflict'li dosyayı düzenleyin
-             # <<<<<<< HEAD ve >>>>>>> upstream/main marker'larını kaldırın
-             git add <resolved-files>
-             git commit -m \"fix: resolve upstream sync conflicts\"
-             \`\`\`
-
-          3. PR'ı merge edin.
-
-          ---
-          _Bu PR otomatik olarak GitHub Actions tarafından oluşturulmuştur._"
-
-          PR_URL=$(gh pr create \
-            --base "${{ env.TARGET_BRANCH }}" \
-            --head "$BRANCH_NAME" \
-            --title "⚠️ Upstream Sync Conflict — Manuel Çözüm Gerekli" \
-            --body "$PR_BODY")
-
-          echo "PR created: $PR_URL"
+          echo "PR #${PR_NUMBER} created: $PR_URL"
 
           # Label'ları ekle
-          gh pr edit "$BRANCH_NAME" --add-label "auto-sync" --add-label "conflict" || true
+          curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" \
+            -d '{"labels":["auto-sync","conflict"]}' > /dev/null || true
 
           echo "✅ Conflict PR created — manual resolution needed."
 
