@@ -18,3 +18,8 @@ def core_function():
 def new_feature():
     """A brand new feature from parent."""
     return "new feature v2"
+
+
+def health_check():
+    """System health check — added via parent push."""
+    return {"status": "healthy", "version": get_version()}
